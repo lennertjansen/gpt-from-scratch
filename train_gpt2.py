@@ -153,9 +153,30 @@ class GPT(nn.Module):
         return model
 
 
-    def forward(self, x):
-        pass
+    def forward(self, idx):
+        # idx is of shape (B, T)
+        B, T = idx.size()
+        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size (max context length) is {self.config.block_size}"
+
+        # forward the token position embeddings
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # shape (T)
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
+        tok_emb = self.transformer.wte(idx) # token embeddings of shape (B, T, n_embd)
+        x = tok_emb + pos_emb # (B, T, n_embd), through broadcasting, namely
+        # (B, T, n_embd)
+        #   +(T, n_embd)
+        #---------------
+        # (B, T, n_embd)
+
+        # forward the transformer blocks
+        for block in self.transformer.h:
+            x = block(x)
+
+        # forward the final layernorm and classifier
+        x = self.transformer.ln_f(x) 
+        logits = self.transformer.lm_head(x) # (B, T, vocab_size)
+        return logits
+        
+
 
 # ---------
-model = GPT.from_pretrained('gpt2')
-print("Didn't crash 👍")
