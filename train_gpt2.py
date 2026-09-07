@@ -174,7 +174,7 @@ class GPT(nn.Module):
 
         # forward the final layernorm and classifier
         x = self.transformer.ln_f(x) 
-        logits = self.transformer.lm_head(x) # (B, T, vocab_size)
+        logits = self.lm_head(x) # (B, T, vocab_size)
         return logits
         
 
