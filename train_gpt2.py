@@ -180,20 +180,20 @@ class GPT(nn.Module):
 
 
 # ---------
+# autodetect most capable available device
+device = "cpu"
+if torch.cuda.is_available():
+    device = "cuda"
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps"
+print(f"using device: {device}")
+
 num_return_sequences = 5
 max_length = 30
 
-model = GPT.from_pretrained('gpt2')
+# model = GPT.from_pretrained('gpt2')
+model = GPT(GPTConfig())
 model.eval()
-
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
-
-print(f"using device: {device}")
 model.to(device)
 
 import tiktoken
