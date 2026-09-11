@@ -105,6 +105,17 @@ class GPT(nn.Module):
         # weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
 
+        # init params following openai's implementation: https://github.com/openai/gpt-2/blob/master/src/model.py
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     @classmethod
     def from_pretrained(cls, model_type):
         """Loads the pretrained GPT-2 weights from HF"""
