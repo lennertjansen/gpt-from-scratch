@@ -25,3 +25,6 @@ data/*.npy
 
 # fineweb shards
 edu_fineweb10B/
+
+# hellaswag data
+hellaswag/
