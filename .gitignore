@@ -22,3 +22,6 @@ data/*.npy
 .DS_Store
 .idea/
 .vscode/
+
+# fineweb shards
+edu_fineweb10B/
