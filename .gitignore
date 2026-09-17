@@ -28,3 +28,6 @@ edu_fineweb10B/
 
 # hellaswag data
 hellaswag/
+
+# logging and checkpointing
+log/

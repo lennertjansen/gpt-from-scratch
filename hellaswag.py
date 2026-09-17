@@ -32,6 +32,7 @@ import tiktoken
 from tqdm import tqdm
 import torch
 import torch.nn as nn
+from datasets import load_dataset
 from torch.nn import functional as F
 from transformers import GPT2LMHeadModel
 
@@ -110,12 +111,13 @@ def render_example(example):
     return data, tokens, mask, label
 
 def iterate_examples(split):
-    # there are 10,042 examples in total in val
-    download(split)
-    with open(os.path.join(DATA_CACHE_DIR, f"hellaswag_{split}.jsonl"), "r") as f:
-        for line in f:
-            example = json.loads(line)
-            yield example
+    hf_split = "validation" if split == "val" else split
+    dataset = load_dataset("Rowan/hellaswag", split=hf_split)
+
+    for example in dataset:
+        if isinstance(example["label"], str):
+            example["label"] = int(example["label"])
+        yield example
 
 @torch.no_grad()
 def evaluate(model_type, device):
