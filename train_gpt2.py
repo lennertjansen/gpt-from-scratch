@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import tiktoken
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.nn import functional as F
 from transformers import GPT2LMHeadModel
 from torch.distributed import init_process_group, destroy_process_group
@@ -242,24 +243,33 @@ class GPT(nn.Module):
         
 # ------------------------------------------------------------------------------
 
+def load_tokens(filename):
+    npt = np.load(filename)
+    ptt = torch.tensor(npt, dtype=torch.long)
+    return ptt
+
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes):
+    def __init__(self, B, T, process_rank, num_processes, split):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
+        assert split in {'train', 'val'}
 
-        # at init, load tokens from disk and store them in memory
-        with open('input.txt', 'r') as f:
-            text = f.read()
-        enc = tiktoken.get_encoding("gpt2")
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens)
-        if self.process_rank == 0:
-            print(f"loaded {len(self.tokens)} tokens")
-            print(f"1 epoch = {len(self.tokens) // (self.B * self.T)} batches")
-
-        # state
+        # get the shard filenames
+        data_root = "edu_fineweb10B"
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if split in s]
+        shards = sorted(shards)
+        shards = [os.path.join(data_root, s) for s in shards]
+        self.shards = shards
+        assert len(shards) > 0, f"no shards found for split {split}"
+        if master_process:
+            print(f"found {len(shards)} shards for split {split}")
+        
+        # state, init at shard zero
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
         self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
@@ -271,9 +281,11 @@ class DataLoaderLite:
         # advance the position in the tensor
         self.current_position += B * T * self.num_processes
 
-        # if loading the next batch would be out of bounds, reset current position to (B * T * process_rank)
+        # if loading the next batch would be out of bounds, advance to the next shard
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
-            self.current_position = self.B * self.T * self.process_rank
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
+            self.current_position = B * T * self.process_rank
         return x, y
 
 # ------------------------------------------------------------------------------
@@ -317,8 +329,16 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
+# Global batch = B * T * GPUs * gradient accumulation steps
+# Target global batch: 2**19 = 524,288 tokens per optimizer step
+# My setup:
+## (8x A100 40GB): 32 * 1024 * 8 = 262,144 tokens per micro-step
+## 524,288 / 262,144 = 2 gradient accumulation steps
+# Karpathy's setup:
+## (8x A100 80GB): 64 * 1024 * 8 = 524,288 tokens per micro-step
+## 1 accumulation step
 total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
-B = 16 # micro batch size
+B = 32 # micro batch size per GPU
 T = 1024 # sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, "total_batch_size must be divisble by B * T * ddp_world_size"
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
@@ -326,7 +346,7 @@ if master_process:
     print(f"total desired batch size: {total_batch_size}")
     print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
 
-train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
+train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
 
 torch.set_float32_matmul_precision('high')
 
@@ -338,10 +358,20 @@ if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model
 
-max_lr = 3e-4
+
+# Training schedule to match GPT-3 Small (125M):
+# - GPT-3 Small uses a 0.5M-token batch (Table 2.1):
+#   https://arxiv.org/pdf/2005.14165
+# - Use 2**19 = 524,288 tokens as a convenient approximation.
+# - Dataset size: ~10B tokens.
+# - Training steps: 10e9 / 2**19 ≈ 19,073.
+# - Appendix B uses 375M warmup tokens.
+# - Warmup steps: 375e6 / 2**19 ≈ 715.
+max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+warmup_steps = 715
+max_steps = 19073
+
 def get_lr(it):
     # 1) (start) linear warmup for warmup_iters steps
     if it < warmup_steps:
