@@ -30,4 +30,4 @@ edu_fineweb10B/
 hellaswag/
 
 # logging and checkpointing
-log/
+log*/

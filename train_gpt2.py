@@ -375,7 +375,9 @@ if ddp:
 max_lr = 6e-4
 min_lr = max_lr * 0.1
 warmup_steps = 715
-max_steps = 19073
+num_epochs = 1
+steps_per_epoch = 19073
+max_steps = steps_per_epoch * num_epochs # 19,073 steps is ~1 epoch for 10B tokens and batch size 2**19
 
 def get_lr(it):
     # 1) (start) linear warmup for warmup_iters steps
@@ -402,7 +404,9 @@ optimizer = raw_model.configure_optimizers(
 )
 
 # create the directory used for checkpoints and logs
-log_dir = "log"
+model_size_m = round(sum(p.numel() for p in raw_model.parameters()) / 1e6)
+training_tokens_b = round(max_steps * total_batch_size / 1e9)
+log_dir = f"log{model_size_m}M_{training_tokens_b}B"
 log_file = os.path.join(log_dir, "log.txt")
 if master_process:
     os.makedirs(log_dir, exist_ok=True)
@@ -430,6 +434,8 @@ def get_most_likely_row(tokens, mask, logits):
     return avg_loss.argmin().item()
 
 enc = tiktoken.get_encoding("gpt2")
+
+val_loss_accum = torch.tensor(0.0, device=device)
 
 for step in range(max_steps):
     t0 = time.time()
@@ -554,12 +560,12 @@ for step in range(max_steps):
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
-        if ddp:
-            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
         loss.backward()
     if ddp:
         dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
@@ -570,6 +576,16 @@ for step in range(max_steps):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     optimizer.step()
+    
+    # sanity check: DDP replicas must stay bit-identical.
+    # gradients are all-reduced every step, so each rank's weights should equal
+    # the cross-rank average exactly. nonzero drift => grad sync is broken
+    # (e.g. require_backward_grad_sync set after the forward pass).
+    # if ddp and step == 15:
+    #     w = raw_model.lm_head.weight.detach()
+    #     avg = w.clone()
+    #     dist.all_reduce(avg, op=dist.ReduceOp.AVG)
+    #     print(f"rank {ddp_rank} replica drift: {(w - avg).abs().max().item():.3e}")
     if device_type == "cuda":
         torch.cuda.synchronize()
     t1 = time.time()
