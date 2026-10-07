@@ -1,6 +1,6 @@
 # GPT from scratch
 
-Reproduction of GPT-2 (124M) in PyTorch, trained from scratch on 10B tokens of FineWeb-Edu on 8x A100 80GB, and benchmarked against the OpenAI checkpoint and the GPT-3 paper on HellaSwag.
+Reproduction of GPT-2 (124M) in PyTorch following Karpathy's nanogpt lecture, trained from on 10B tokens of FineWeb-Edu on 8x A100 40GB, and benchmarked against the OpenAI checkpoint and the GPT-3 paper on HellaSwag evals.
 
 ## Model
 
